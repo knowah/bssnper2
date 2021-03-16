@@ -395,7 +395,12 @@ void genotype_bam(struct GenotypingOptions *opts)
 	reset_refcache(&ref_cache);
 	
 	// keep track of whether a chrom has been seen yet
-	bool seen_chrom[header->n_targets];
+	bool *seen_chrom;
+	seen_chrom = malloc(header->n_targets * sizeof(*seen_chrom));
+	if (seen_chrom == NULL) {
+		fprintf(stderr, "Unable to initialize chromsome array (seen_chrom).\n");
+		exit(-2);
+	}
 	for (i = 0; i < header->n_targets; i++) seen_chrom[i] = false;
 
 	// open VCF and homref files for output
@@ -512,6 +517,7 @@ void genotype_bam(struct GenotypingOptions *opts)
 	fclose(vcf_fptr);
 	fclose(homref_fptr);
 
+	free(seen_chrom);
 	fai_destroy(ref_cache.fai);
 	reset_refcache(&ref_cache);
 	gt_buffer_destroy(geno_buf);
