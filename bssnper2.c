@@ -450,11 +450,11 @@ void genotype_bam(struct GenotypingOptions *opts)
 		
 		// verify sorting by chrom
 		if (new_chrom) {
+			curr_chrom = b->core.tid;
 			if (seen_chrom[curr_chrom]) {
 				fprintf(stderr, "ERROR: BAM file not sorted [failing read: %s]\n", read_name);
 				exit(1);
 			}
-			curr_chrom = b->core.tid;
 			chrom_name = header->target_name[curr_chrom];
 			seen_chrom[curr_chrom] = true;
 			reset_refcache(&ref_cache);
