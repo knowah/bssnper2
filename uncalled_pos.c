@@ -21,9 +21,9 @@ read_ptr_node *read_ptr_node_init(bam1_t *read_ptr)
 {
     read_ptr_node *rpn = malloc(sizeof(read_ptr_node));
     if (rpn == NULL) {
-		fprintf(stderr, "ERROR: Unable to allocate memory for read_ptr_node\n");
-		exit(3);
-	}
+        fprintf(stderr, "ERROR: Unable to allocate memory for read_ptr_node\n");
+        exit(3);
+    }
     rpn->qname = malloc((read_ptr->core.l_qname+1)*sizeof(char));
     strcpy(rpn->qname, bam_get_qname(read_ptr));
     rpn->read_ptr = bam_dup1(read_ptr);

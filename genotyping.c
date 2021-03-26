@@ -692,7 +692,7 @@ void genotype(
 void write_uint_array(FILE* fptr, uint32_t* arr, int len, char sep)
 {
     for (int i = 0; i < len-1; i++)
-		fprintf(fptr, "%u%c", arr[i], sep);
+        fprintf(fptr, "%u%c", arr[i], sep);
     fprintf(fptr, "%u", arr[len-1]);
     return;
 }
@@ -700,7 +700,7 @@ void write_uint_array(FILE* fptr, uint32_t* arr, int len, char sep)
 void write_dbl_array(FILE* fptr, double* arr, int len, char sep)
 {
     for (int i = 0; i < len-1; i++)
-		fprintf(fptr, "%0.3f%c", arr[i], sep);
+        fprintf(fptr, "%0.3f%c", arr[i], sep);
     fprintf(fptr, "%0.3f", arr[len-1]);
     return;
 }

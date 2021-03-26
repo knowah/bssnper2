@@ -117,5 +117,5 @@ int main(int argc, char **argv)
     genotype_bam(&options);
     
     if (dummy != NULL) free(dummy);
-	return 0;
+    return 0;
 }

@@ -9,20 +9,20 @@
 typedef struct read_ptr_node read_ptr_node;
 struct read_ptr_node
 {
-	char *qname;
-	bam1_t *read_ptr;
-	read_ptr_node *next;
+    char *qname;
+    bam1_t *read_ptr;
+    read_ptr_node *next;
 };
 
 typedef struct gt_pos gt_pos;
 struct gt_pos
 {
-	hts_pos_t pos;
-	uint32_t call_counts[8];
-	uint32_t qual_sums[8];
-	int num_reads;
-	read_ptr_node *reads;
-	gt_pos *next;
+    hts_pos_t pos;
+    uint32_t call_counts[8];
+    uint32_t qual_sums[8];
+    int num_reads;
+    read_ptr_node *reads;
+    gt_pos *next;
 };
 
 typedef uint32_t gt_hash_t;
