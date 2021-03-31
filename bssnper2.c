@@ -186,9 +186,12 @@ void call_genotype(FILE *vcf_fptr, FILE *homref_fptr, const char* chrom, gt_pos*
     );
 }
 
-void update_pos_buffer(gt_buffer *gb, hts_pos_t pos, uint8_t basecall, uint8_t qual, bool is_W)
+void update_pos_buffer(gt_buffer *gb, hts_pos_t pos, uint8_t basecall, uint8_t qual, bool is_W, uint32_t ins_len)
 {
     gt_pos *gp = retrieve_gt_pos(gb, pos, true);
+    if (ins_len > 0) {
+        gp = retrieve_ins_gt_pos(gp, ins_len);
+    }
     int index = -1;
     if (is_W) {
         switch (basecall) {
@@ -210,6 +213,12 @@ void update_pos_buffer(gt_buffer *gb, hts_pos_t pos, uint8_t basecall, uint8_t q
     gp->qual_sums[index] += qual;
 }
 
+void update_pos_buffer_del(gt_buffer *gb, hts_pos_t pos, uint32_t len)
+{
+    gt_pos *gp = retrieve_gt_pos(gb, pos, true);
+    register_deletion(gp, len);
+}
+
 void evaluate_read(gt_buffer *gb, bam1_t *b, hts_pos_t eval_start, hts_pos_t eval_end, uint8_t min_qual)
 {
     const bam1_core_t *read = &b->core;
@@ -222,13 +231,17 @@ void evaluate_read(gt_buffer *gb, bam1_t *b, hts_pos_t eval_start, hts_pos_t eva
     //uint8_t *seq = bam_get_seq(b);
     uint8_t *quals = bam_get_qual(b);
     
-    uint32_t op_len;
+    uint32_t op_len, ins_len;
     uint16_t op_num;
-    uint8_t cigar_op;
+    uint8_t cigar_op, this_qual;
     uint32_t readpos = 0;
     for (op_num = 0; op_num < read->n_cigar; op_num++) {
         op_len = bam_get_cigar(b)[op_num]>>BAM_CIGAR_SHIFT;
         cigar_op = BAM_CIGAR_STR[bam_get_cigar(b)[op_num]&BAM_CIGAR_MASK];
+        if (!past_start && refpos >= eval_start)
+            past_start = true;
+        if (eval_end > 0 && refpos >= eval_end)
+            return;
         switch(cigar_op) {
             case 'M':
             case '=':
@@ -239,19 +252,31 @@ void evaluate_read(gt_buffer *gb, bam1_t *b, hts_pos_t eval_start, hts_pos_t eva
                     if (eval_end > 0 && refpos >= eval_end)
                         return;
                     
-                    uint8_t this_qual = quals[readpos];
+                    this_qual = quals[readpos];
                     if (past_start && this_qual >= min_qual)
-                        update_pos_buffer(gb, refpos, seq_nt16_str[bam_seqi(bam_get_seq(b), readpos)], this_qual, watson);
+                        update_pos_buffer(gb, refpos, seq_nt16_str[bam_seqi(bam_get_seq(b), readpos)], this_qual, watson, 0);
                     readpos += 1;
                     refpos += 1;
                 }
                 break;
             case 'D':
-                // register_deletion(refpos+1, op_len);
+                if (past_start)
+                    register_deletion(gb, refpos-1, op_len);
                 refpos += op_len;
                 break;
             case 'I':
-                // register_insertion(refpos+1, op_len, b, seq+readpos);
+                if (!past_start) {
+                    readpos += op_len;
+                    continue;
+                }
+                ins_len = op_len;
+                while (op_len-- > 0) {
+                    this_qual = quals[readpos];
+                    if (this_qual >= min_qual)
+                        update_pos_buffer(gb, refpos-1, seq_nt16_str[bam_seqi(bam_get_seq(b), readpos)], this_qual, watson, ins_len);
+                    readpos += 1;
+                }
+                break;
             case 'S':
                 readpos += op_len;
                 break;
