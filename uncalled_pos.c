@@ -30,16 +30,28 @@ read_ptr_node *read_ptr_node_init(bam1_t *read_ptr)
     rpn->next = NULL;
     return rpn;
 }
+void bc_zero(basecalls *p)
+{
+    for (int i = 0; i < 8; i++) {
+        p->call_counts[i] = 0;
+        p->qual_sums[i] = 0;
+    }
+}
 
 gt_pos *gt_pos_init(hts_pos_t pos)
 {
     gt_pos *gp = malloc(sizeof *gp);
     gp->pos = pos;
+    /*
     for (int i = 0; i < 8; i++) {
-        gp->call_counts[i] = 0;
-        gp->qual_sums[i] = 0;
+        gp->bc.call_counts[i] = 0;
+        gp->bc.qual_sums[i] = 0;
     }
+    */
+    bc_zero(&(gp->bc));
     gp->num_reads = 0;
+    gp->ins = NULL;
+    gp->del = NULL;
     gp->reads = NULL;
     gp->next = NULL;
     return gp;
@@ -122,6 +134,125 @@ gt_pos *retrieve_gt_pos(gt_buffer *gb, hts_pos_t pos, bool create)
     return NULL;
 }
 
+del_dict* del_dict_init()
+{
+    del_dict *dd = malloc(sizeof(del_dict));
+    dd->total_reads = 0;
+    for (int i = 0; i < INDEL_HASHSIZE; i++) dd->entries[i] = NULL;
+    return dd;
+}
+
+del_entry* del_entry_init(uint32_t del_len)
+{
+    del_entry *e = malloc(sizeof(del_entry));
+    e->count = 0;
+    e->length = del_len;
+    e->next = NULL;
+    return e;
+}
+
+del_entry* retrieve_del_entry(del_dict *dd, uint32_t del_len)
+{
+    del_entry *temp, *e;
+    uint32_t index = del_len % INDEL_HASHSIZE;
+    e = dd->entries[index];
+
+    // if entry non-existent, create it
+    if (e == NULL) {
+        dd->entries[index] = del_entry_init(del_len);
+        return dd->entries[index];
+    }
+
+    // entry exists and is the correct one
+    if (e->length == del_len) return e;
+    
+    if (e->length > del_len) {
+        // existing entry in hash is for a larger del_len
+        temp = e;
+        e = del_entry_init(del_len);
+        e->next = temp;
+    } else {
+        // initial entry is for a smaller del_len
+        while (e->next != NULL && e->next->length < del_len) e = e->next;
+        if (e->length != del_len) {
+            del_entry *temp = e->next;
+            e->next = del_entry_init(del_len);
+            e = e->next;
+            e->next = temp;
+        }
+    }
+
+    return e;
+}
+
+void increment_del(gt_pos *gp, uint32_t del_len)
+{
+    if (gp->del == NULL)
+        gp->del = del_dict_init();
+    del_entry *e = retrieve_del_entry(gp->del, del_len);
+    e->count += 1;
+    gp->del->total_reads += 1;
+}
+
+ins_entry* ins_entry_init(uint32_t ins_len)
+{
+    ins_entry *e = malloc(sizeof(ins_entry));
+    e->count = 0;
+    e->length = ins_len;
+    e->bc_list = malloc(ins_len * sizeof(basecalls));
+    for (uint32_t i = 0; i < ins_len; i++)
+        bc_zero(&(e->bc_list[i]));
+    e->next = NULL;
+    return e;
+}
+
+ins_dict* ins_dict_init()
+{
+    ins_dict *id = malloc(sizeof(ins_dict));
+    id->total_reads = 0;
+    for (int i = 0; i < INDEL_HASHSIZE; i++) id->entries[i] = NULL;
+    return id;
+}
+
+
+ins_entry* retrieve_ins_entry(gt_pos *gp, uint32_t ins_len)
+{
+    ins_entry *temp, *e;
+    uint32_t index = ins_len % INDEL_HASHSIZE;
+    if (gp->ins == NULL) {
+        gp->ins = ins_dict_init();
+    }
+    
+    e = gp->ins->entries[index];
+
+    // if entry non-existent, create it
+    if (e == NULL) {
+        gp->ins->entries[index] = ins_entry_init(ins_len);
+        return gp->ins->entries[index];
+    }
+
+    // entry exists and is the correct one
+    if (e->length == ins_len) return e;
+    
+    if (e->length > ins_len) {
+        // existing entry in hash is for a larger ins_len
+        temp = e;
+        e = ins_entry_init(ins_len);
+        e->next = temp;
+    } else {
+        // initial entry is for a smaller ins_len
+        while (e->next != NULL && e->next->length < ins_len) e = e->next;
+        if (e->length != ins_len) {
+            ins_entry *temp = e->next;
+            e->next = ins_entry_init(ins_len);
+            e = e->next;
+            e->next = temp;
+        }
+    }
+
+    return e;
+}
+
 void insert_read(gt_buffer *gb, hts_pos_t pos, bam1_t *read_ptr)
 {
     gt_pos *gp = retrieve_gt_pos(gb, pos, true);
@@ -137,6 +268,41 @@ void insert_read(gt_buffer *gb, hts_pos_t pos, bam1_t *read_ptr)
     return;
 }
 
+void ins_entry_destroy(ins_entry *e)
+{
+    free(e->bc_list);
+    free(e);
+}
+
+void ins_dict_destroy(ins_dict *id)
+{
+    ins_entry *e, *temp;
+    for (int i = 0; i < INDEL_HASHSIZE; i++) {
+        e = id->entries[i];
+        while (e != NULL) {
+            temp = e->next;
+            ins_entry_destroy(e);
+            e = temp;
+        }
+    }
+    free(id);
+}
+
+void del_dict_destroy(del_dict *dd)
+{
+    del_entry *e, *temp;
+    for (int i = 0; i < INDEL_HASHSIZE; i++) {
+        e = dd->entries[i];
+        while (e != NULL) {
+            temp = e->next;
+            free(e);
+            e = temp;
+        }
+    }
+    free(dd);
+
+}
+
 void gt_pos_destroy(gt_pos *gp)
 {
     if (gp->reads != NULL) {
@@ -144,11 +310,11 @@ void gt_pos_destroy(gt_pos *gp)
         free_read_ptr_node_chain(gp->reads);
     }
     gp->next = NULL;
+    if (gp->ins != NULL) ins_dict_destroy(gp->ins);
+    if (gp->del != NULL) del_dict_destroy(gp->del);
     free(gp);
     return;
 }
-
-
 
 gt_buffer *gt_buffer_init(gt_hash_t size)
 {
