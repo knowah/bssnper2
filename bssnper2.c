@@ -291,7 +291,7 @@ void process_insertion(gt_pos *gp, uint32_t ins_sz, bam1_t *b, uint32_t *readpos
     gp->ins->total_reads += 1;
     ie->count += 1;
     uint32_t ins_pos = 0;
-    while (ins_pos++ < ins_sz) {
+    while (ins_pos < ins_sz) {
         if (quals[*readpos] >= min_qual) {
             update_pos(
                 &(ie->bc_list[ins_pos]),
@@ -300,6 +300,7 @@ void process_insertion(gt_pos *gp, uint32_t ins_sz, bam1_t *b, uint32_t *readpos
                 watson
             );
         }
+        ins_pos++;
         (*readpos) += 1;
     }
     
