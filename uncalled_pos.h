@@ -42,12 +42,14 @@ typedef struct
 {
     del_entry *entries[INDEL_HASHSIZE];
     int total_reads;
+    int occupancy;
 } del_dict;
 
 typedef struct
 {
     ins_entry *entries[INDEL_HASHSIZE];
     int total_reads;
+    int occupancy;
 } ins_dict;
 
 
@@ -86,5 +88,7 @@ void gt_pos_destroy(gt_pos *gp);
 void gt_buffer_destroy(gt_buffer *gb);
 void increment_del(gt_pos *gp, uint32_t del_len);
 ins_entry* retrieve_ins_entry(gt_pos *gp, uint32_t ins_len);
+del_entry* retrieve_del_entry(del_dict *dd, uint32_t del_len);
+int gp_count(gt_pos *gp);
 
 #endif 

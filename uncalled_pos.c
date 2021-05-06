@@ -138,6 +138,7 @@ del_dict* del_dict_init()
 {
     del_dict *dd = malloc(sizeof(del_dict));
     dd->total_reads = 0;
+    dd->occupancy = 0;
     for (int i = 0; i < INDEL_HASHSIZE; i++) dd->entries[i] = NULL;
     return dd;
 }
@@ -160,6 +161,7 @@ del_entry* retrieve_del_entry(del_dict *dd, uint32_t del_len)
     // if entry non-existent, create it
     if (e == NULL) {
         dd->entries[index] = del_entry_init(del_len);
+        dd->occupancy++;
         return dd->entries[index];
     }
 
@@ -170,6 +172,7 @@ del_entry* retrieve_del_entry(del_dict *dd, uint32_t del_len)
         // existing entry in hash is for a larger del_len
         temp = e;
         e = del_entry_init(del_len);
+        dd->occupancy++;
         e->next = temp;
     } else {
         // initial entry is for a smaller del_len
@@ -177,12 +180,20 @@ del_entry* retrieve_del_entry(del_dict *dd, uint32_t del_len)
         if (e->length != del_len) {
             del_entry *temp = e->next;
             e->next = del_entry_init(del_len);
+            dd->occupancy++;
             e = e->next;
             e->next = temp;
         }
     }
 
     return e;
+}
+
+int gp_count(gt_pos *gp)
+{
+    int t = 0;
+    for (int i = 0; i < 8; i++) t += gp->bc.call_counts[i];
+    return t;
 }
 
 void increment_del(gt_pos *gp, uint32_t del_len)
@@ -210,6 +221,7 @@ ins_dict* ins_dict_init()
 {
     ins_dict *id = malloc(sizeof(ins_dict));
     id->total_reads = 0;
+    id->occupancy = 0;
     for (int i = 0; i < INDEL_HASHSIZE; i++) id->entries[i] = NULL;
     return id;
 }
@@ -228,6 +240,7 @@ ins_entry* retrieve_ins_entry(gt_pos *gp, uint32_t ins_len)
     // if entry non-existent, create it
     if (e == NULL) {
         gp->ins->entries[index] = ins_entry_init(ins_len);
+        gp->ins->occupancy++;
         return gp->ins->entries[index];
     }
 
@@ -238,6 +251,7 @@ ins_entry* retrieve_ins_entry(gt_pos *gp, uint32_t ins_len)
         // existing entry in hash is for a larger ins_len
         temp = e;
         e = ins_entry_init(ins_len);
+        gp->ins->occupancy++;
         e->next = temp;
     } else {
         // initial entry is for a smaller ins_len
@@ -245,6 +259,7 @@ ins_entry* retrieve_ins_entry(gt_pos *gp, uint32_t ins_len)
         if (e->length != ins_len) {
             ins_entry *temp = e->next;
             e->next = ins_entry_init(ins_len);
+            gp->ins->occupancy++;
             e = e->next;
             e->next = temp;
         }
