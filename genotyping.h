@@ -28,12 +28,16 @@ static const double TVER_TVER = -17.399029496420; // 2*log(0.001/6)
 
 enum Genotype { gt_AA, gt_AT, gt_AC, gt_AG, gt_TT, gt_TC, gt_TG, gt_CC, gt_CG, gt_GG, gt_NN=-1 };
 
+static const char iupac_gt_str[] = "AWMRTYKCSG";
+#define iupac_gt(g) (((g)>=gt_AA&&(g)<=gt_GG)?iupac_gt_str[(g)]:'N')
+
 struct GenotypingOptions
 {
     char *bam_fname;
     char *ref_fname;
     char *vcf_fname;
     char *homref_fname;
+    char *indel_fname;
     uint8_t min_base_qual;
     uint32_t min_depth;
     uint32_t max_depth;
