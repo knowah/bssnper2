@@ -283,8 +283,8 @@ void update_pos_buffer_del(gt_buffer *gb, hts_pos_t pos, uint32_t len)
 #define read_base(b,pos) (seq_nt16_str[bam_seqi(bam_get_seq((b)),(pos))])
 void process_insertion(gt_pos *gp, uint32_t ins_sz, bam1_t *b, uint32_t *readpos, uint8_t *quals, uint8_t min_qual, bool watson)
 {
-    if (quals[*readpos] == 0) { fprintf(stderr, "\tfirst base is qual 0; skipping.\n"); return; }
-    fprintf(stderr, "INS: %s refpos: %lu length %u readpos: %u\n", bam_get_qname(b), gp->pos, ins_sz, *readpos);
+    if (quals[*readpos] == 0) { /*fprintf(stderr, "\tfirst base is qual 0; skipping.\n");*/ return; }
+    //fprintf(stderr, "INS: %s refpos: %lu length %u readpos: %u\n", bam_get_qname(b), gp->pos, ins_sz, *readpos);
     // where the first base has a qual of 0, ignore this insertion
     // this will account for read pairs where tweak_overlap_quality has reset quals
     ins_entry *ie = retrieve_ins_entry(gp, ins_sz);
@@ -329,10 +329,19 @@ void evaluate_read(gt_buffer *gb, bam1_t *b, hts_pos_t eval_start, hts_pos_t eva
         //cigar_op = BAM_CIGAR_STR[bam_get_cigar(b)[op_num]&BAM_CIGAR_MASK];
         op_len = get_cigar_op_len(b, op_num);
         cigar_op = get_cigar_op(b, op_num);
-        if (!past_start && refpos >= eval_start)
+        if (!past_start && refpos >= eval_start && cigar_op != 'I' && cigar_op != 'D')
             past_start = true;
-        if (eval_end > 0 && refpos >= eval_end)
+        if (eval_end > 0 && refpos >= eval_end) {
+            if (refpos == eval_end && op_num > 0) {
+                if (cigar_op == 'D') update_pos_buffer_del(gb, refpos-1, op_len);
+                else if (cigar_op == 'I') {
+                    process_insertion(
+                        retrieve_gt_pos(gb, refpos-1, true), op_len, b, &readpos, quals, min_qual, watson
+                    );
+                }
+            }
             return;
+        }
         switch(cigar_op) {
             case 'M':
             case '=':
@@ -341,17 +350,17 @@ void evaluate_read(gt_buffer *gb, bam1_t *b, hts_pos_t eval_start, hts_pos_t eva
                     if (!past_start && refpos >= eval_start)
                         past_start = true;
                     if (eval_end > 0 && refpos >= eval_end) {
-                        // do we need to do this if refpos > eval_end? or only if ==eval_end?
+                        // do we need to do this if refpos > eval_end? or only if ==eval_end? - think the latter?
                         // if we reach the end of a M/=/X operation at eval_end
                         // need to check if there is an I or D after
                         // in order to register ins/del with this position
-                        if (op_len == 0 && op_num < read->n_cigar-1) {
+                        if (refpos == eval_end && op_len == 0 && op_num < read->n_cigar-1) {
                             cigar_op = get_cigar_op(b, op_num+1);
                             op_len = get_cigar_op_len(b, op_num+1);
                             if (cigar_op == 'D') update_pos_buffer_del(gb, refpos-1, op_len);
                             else if (cigar_op == 'I') {
                                 process_insertion(
-                                    retrieve_gt_pos(gb, refpos-1, false), op_len, b, &readpos, quals, min_qual, watson
+                                    retrieve_gt_pos(gb, refpos-1, true), op_len, b, &readpos, quals, min_qual, watson
                                 );
                             }
                         }
@@ -366,7 +375,8 @@ void evaluate_read(gt_buffer *gb, bam1_t *b, hts_pos_t eval_start, hts_pos_t eva
                 }
                 break;
             case 'D':
-                if (past_start && op_num > 0)
+                // qual check here prevents double-counting of overlapping portions of reads
+                if (past_start && op_num > 0 && quals[(readpos==0 ? 0 : (readpos-1))] > 0)
                     update_pos_buffer_del(gb, refpos-1, op_len);
                 refpos += op_len;
                 break;
@@ -377,7 +387,7 @@ void evaluate_read(gt_buffer *gb, bam1_t *b, hts_pos_t eval_start, hts_pos_t eva
                 }
                 // below returns NULL gt_pos - why?
                 process_insertion(
-                    retrieve_gt_pos(gb, refpos-1, false), op_len, b, &readpos, quals, min_qual, watson
+                    retrieve_gt_pos(gb, refpos-1, true), op_len, b, &readpos, quals, min_qual, watson
                 );
                 break;
             case 'S':
@@ -496,6 +506,141 @@ void write_vcf_header(FILE *vcf_fptr, sam_hdr_t *bam_hdr, struct GenotypingOptio
     fflush(vcf_fptr);
 }
 
+void place_unique_element(int a, int *arr, int sz)
+{
+    // this function assumes uniqueness
+
+    // check for trivial cases
+    if (sz == 0) { arr[0] = a; return; }
+    if (a > arr[sz-1]) {arr[sz] = a; return;}
+    if (a < arr[0]) {
+        for (int i = sz; i > 0; i--) arr[i] = arr[i-1];
+        arr[0] = a;
+        return;
+    }
+    if (sz == 2) {
+        // in this special case where there are only two elements, 
+        // we know that 'a' belongs in the middle
+        arr[2] = arr[1];
+        arr[1] = a;
+        return;
+    }
+
+    // binary search
+    int s = 0;
+    int e = sz-1;
+    int m;
+    while (e > s) {
+        m = (s+e)/2;
+        if (a > arr[m]) s = m + 1;
+        else e = m - 1;
+    }
+    if (a > arr[e]) e++;
+    for (int i = sz; i > e; i--) arr[i] = arr[i-1];
+    arr[e] = a;
+    return;
+}
+
+void write_ins_entry(FILE *fp, ins_entry *e)
+{
+    enum Genotype gt;
+    int q;
+    basecalls *b;
+    fprintf(fp, "%d,%d,", e->length, e->count);
+    for (int j = 0; j < e->length; j++) {
+        b = &(e->bc_list[j]);
+        bayesian_genotype_inference(
+            &gt, &q, '\0',
+            b->call_counts[W_A], b->call_counts[W_T], b->call_counts[W_C], b->call_counts[W_G],
+            b->call_counts[C_A], b->call_counts[C_T], b->call_counts[C_C], b->call_counts[C_G],
+            b->qual_sums[W_A], b->qual_sums[W_T], b->qual_sums[W_C], b->qual_sums[W_G],
+            b->qual_sums[C_A], b->qual_sums[C_T], b->qual_sums[C_C], b->qual_sums[C_G]
+        );
+        fputc(iupac_gt(gt), fp);
+    }
+}
+
+void write_ins(FILE *fp, char *chrom, gt_pos *gp)
+{
+    ins_dict *id = gp->ins;
+    if (id->occupancy < 1) return;
+    ins_entry *e;
+    int i;
+    // add 1 to the pos, since we are actually looking just after the pos in question
+    fprintf(fp, "%s\t%ld\t%d\tINS\t%d\t", chrom, gp->pos+1, gp_count(gp), id->total_reads);
+    if (id->occupancy > 1) {
+        int* lengths = malloc(id->occupancy * sizeof(int));
+        int sorted_sz = 0;
+
+        // sort the observed insertion lengths so they are printed out in order
+        for (i = 0; i < INDEL_HASHSIZE && sorted_sz < id->occupancy; i++) {
+            e = id->entries[i];
+            while (e != NULL) {
+                place_unique_element(e->length, lengths, sorted_sz++);
+                e = e->next;
+            }
+        }
+        
+        for (i = 0; i < id->occupancy; i++) {
+            e = retrieve_ins_entry(gp, lengths[i]);
+            write_ins_entry(fp, e);
+            if (i < id->occupancy-1) fputc(';', fp);
+        }
+        fputc('\n', fp);
+        fflush(fp);
+        free(lengths);
+    } else {
+        for (i = 0; i < INDEL_HASHSIZE; i++) {
+            if ((e = id->entries[i]) != NULL) {
+                write_ins_entry(fp, e);
+                fputc('\n', fp);
+                fflush(fp);
+                return;
+            }
+        }
+    }
+}
+
+void write_del(FILE *fp, char *chrom, gt_pos *gp)
+{
+    del_dict *dd = gp->del;
+    if (dd->occupancy < 1) return;
+    del_entry *e;
+    int i;
+    // add 1 to the pos, since we are actually looking just after the pos in question
+    fprintf(fp, "%s\t%ld\t%d\tDEL\t%d\t", chrom, gp->pos+1, gp_count(gp), dd->total_reads);
+    if (dd->occupancy > 1) {
+        int* lengths = malloc(dd->occupancy * sizeof(int));
+        int sorted_sz = 0;
+
+        // sort the observed insertion lengths so they are printed out in order
+        for (i = 0; i < INDEL_HASHSIZE && sorted_sz < dd->occupancy; i++) {
+            e = dd->entries[i];
+            while (e != NULL) {
+                place_unique_element(e->length, lengths, sorted_sz++);
+                e = e->next;
+            }
+        }
+        
+        for (i = 0; i < dd->occupancy; i++) {
+            e = retrieve_del_entry(dd, lengths[i]);
+            fprintf(fp, "%d,%d", e->length, e->count);
+            if (i < dd->occupancy-1) fputc(';', fp);
+        }
+        fputc('\n', fp);
+        fflush(fp);
+        free(lengths);
+    } else {
+        for (i = 0; i < INDEL_HASHSIZE; i++) {
+            if ((e = dd->entries[i]) != NULL) {
+                fprintf(fp, "%d,%d\n", e->length, e->count);
+                fflush(fp);
+                return;
+            }
+        }
+    }   
+}
+
 void genotype_bam(struct GenotypingOptions *opts)
 {
     int i;
@@ -536,6 +681,7 @@ void genotype_bam(struct GenotypingOptions *opts)
     FILE *vcf_fptr = fopen(opts->vcf_fname, "w");
     write_vcf_header(vcf_fptr, header, opts);
     FILE *homref_fptr = fopen(opts->homref_fname, "w");
+    FILE *indel_fptr = fopen(opts->indel_fname, "w");
 
     int32_t curr_chrom = -1;
     hts_pos_t curr_pos = -1;
@@ -544,6 +690,7 @@ void genotype_bam(struct GenotypingOptions *opts)
     b = bam_init1();
     bool new_chrom;
     char* chrom_name;
+    //gt_pos* to_destroy;
 
     // walk through alignment file
     while (sam_read1(bamf, header, b) >= 0) {
@@ -571,6 +718,11 @@ void genotype_bam(struct GenotypingOptions *opts)
                     bam_destroy1(old_read);
                 }
                 call_genotype(vcf_fptr, homref_fptr, chrom_name, geno_pos, get_ref_base(chrom_name, curr_pos, &ref_cache), opts);
+                if (geno_pos->ins != NULL && geno_pos->ins->total_reads >= opts->min_depth) write_ins(indel_fptr, chrom_name, geno_pos);
+                if (geno_pos->del != NULL && geno_pos->del->total_reads >= opts->min_depth) write_del(indel_fptr, chrom_name, geno_pos);
+                //to_destroy = pop_gt_pos(geno_buf, curr_pos);
+                //fprintf(stderr, "Destroying gt_pos: curr_pos %lu, geno_pos: %p (pos %lu), to_destroy: %p\n", curr_pos, (void *)geno_pos, geno_pos->pos, (void *)to_destroy);
+                //gt_pos_destroy(to_destroy);
                 gt_pos_destroy(pop_gt_pos(geno_buf, curr_pos)); // destroy geno_pos and update geno_buf->occupancy if necessary
             }
             curr_pos++;
@@ -637,6 +789,10 @@ void genotype_bam(struct GenotypingOptions *opts)
                 bam_destroy1(old_read);
             }
             call_genotype(vcf_fptr, homref_fptr, chrom_name, geno_pos, get_ref_base(chrom_name, curr_pos, &ref_cache), opts);
+            if (geno_pos->ins != NULL && geno_pos->ins->total_reads >= opts->min_depth) write_ins(indel_fptr, chrom_name, geno_pos);
+            if (geno_pos->del != NULL && geno_pos->del->total_reads >= opts->min_depth) write_del(indel_fptr, chrom_name, geno_pos);
+            //to_destroy = pop_gt_pos(geno_buf, curr_pos);
+            //gt_pos_destroy(to_destroy);
             gt_pos_destroy(pop_gt_pos(geno_buf, curr_pos)); // destroy geno_pos and update geno_buf->occupancy if necessary
         }
         curr_pos++;
@@ -645,6 +801,7 @@ void genotype_bam(struct GenotypingOptions *opts)
     // close files and free memory
     fclose(vcf_fptr);
     fclose(homref_fptr);
+    fclose(indel_fptr);
 
     free(seen_chrom);
     fai_destroy(ref_cache.fai);
