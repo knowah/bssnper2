@@ -11,6 +11,7 @@ int main(int argc, char **argv)
     // set defaults
     struct GenotypingOptions options;
     options.homref_fname = "/dev/null";
+    options.indel_fname = "/dev/null";
     options.min_base_qual = 13;
     options.min_depth = 1;
     options.max_depth = UINT32_MAX;
@@ -33,6 +34,7 @@ int main(int argc, char **argv)
         {"ref", required_argument, NULL, 'r'},
         {"vcf", required_argument, NULL, 'v'},
         {"homf", required_argument, NULL, 'H'},
+        {"indelf", required_argument, NULL, 'I'},
         {"minCoverage", required_argument, NULL, 'c'},
         {"maxCoverage", required_argument, NULL, 'C'},
         {"minBaseQ", required_argument, NULL, 'b'},
@@ -48,13 +50,14 @@ int main(int argc, char **argv)
         {NULL, 0, NULL, 0}
     };
     
-    while ((opt = getopt_long(argc, argv, "r:v:H:c:C:b:q:f:F:e:a:i:AVs:", longOpts, &optIdx)) != -1)
+    while ((opt = getopt_long(argc, argv, "r:v:H:I:c:C:b:q:f:F:e:a:i:AVs:", longOpts, &optIdx)) != -1)
     {
         switch (opt)
         {
             case 'r': options.ref_fname = optarg; break;
             case 'v': options.vcf_fname = optarg; break;
             case 'H': options.homref_fname = optarg; break;
+            case 'I': options.indel_fname = optarg; break;
             case 'c': options.min_depth = atoi(optarg); break;
             case 'C': options.max_depth = atoi(optarg); break;
             case 'b': options.min_base_qual = atoi(optarg); break;
@@ -101,6 +104,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "ref: %s\n", options.ref_fname);
     fprintf(stderr, "vcf: %s\n", options.vcf_fname);
     fprintf(stderr, "homref: %s\n", options.homref_fname);
+    fprintf(stderr, "indelf: %s\n", options.indel_fname);
     fprintf(stderr, "minBaseQual: %u\n", options.min_base_qual);
     fprintf(stderr, "minCount: %u\n", options.min_depth);
     fprintf(stderr, "maxCount: %u\n", options.max_depth);
