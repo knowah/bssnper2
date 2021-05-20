@@ -739,6 +739,12 @@ void genotype_bam(struct GenotypingOptions *opts)
             chrom_name = header->target_name[curr_chrom];
             seen_chrom[curr_chrom] = true;
             reset_refcache(&ref_cache);
+            if (opts->homref_as_rle) {
+                if (opts->hrrle.end >= 0) write_homref_rle(homref_fptr, &(opts->hrrle));
+                reset_homref_rle(&(opts->hrrle));
+                fprintf(homref_fptr, "chrom=%s\n", chrom_name);
+                fflush(homref_fptr);
+            }
         }
 
         if (b->core.flag&BAM_FPROPER_PAIR && mate_same_chrom(b)) {
@@ -798,6 +804,11 @@ void genotype_bam(struct GenotypingOptions *opts)
         curr_pos++;
     }
     
+    if (opts->homref_as_rle && opts->hrrle.end >= 0) {
+        write_homref_rle(homref_fptr, &(opts->hrrle));
+        reset_homref_rle(&(opts->hrrle));
+    }
+
     // close files and free memory
     fclose(vcf_fptr);
     fclose(homref_fptr);

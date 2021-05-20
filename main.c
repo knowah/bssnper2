@@ -26,6 +26,8 @@ int main(int argc, char **argv)
     options.sample_name = NULL;
     options.cmd_argc = argc;
     options.cmd_argv = argv;
+    options.homref_as_rle = false;
+    reset_homref_rle(&(options.hrrle));
 
     // parse arguments
     int opt, optIdx;
@@ -47,10 +49,11 @@ int main(int argc, char **argv)
         {"assumeHomref", no_argument, NULL, 'A'},
         {"homrefInVCF", no_argument, NULL, 'V'},
         {"sampleName", required_argument, NULL, 's'},
+        {"homrefAsRLE", no_argument, NULL, 'R'},
         {NULL, 0, NULL, 0}
     };
     
-    while ((opt = getopt_long(argc, argv, "r:v:H:I:c:C:b:q:f:F:e:a:i:AVs:", longOpts, &optIdx)) != -1)
+    while ((opt = getopt_long(argc, argv, "r:v:H:I:c:C:b:q:f:F:e:a:i:AVs:R", longOpts, &optIdx)) != -1)
     {
         switch (opt)
         {
@@ -70,6 +73,7 @@ int main(int argc, char **argv)
             case 'A': options.assume_homref = true; break;
             case 'V': options.homref_in_vcf = true; break;
             case 's': options.sample_name = optarg; break;
+            case 'R': options.homref_as_rle = true; break;
             case '?':
                 fprintf(stderr, "ERROR: Invalid argument.\n");
                 exit(-1);
@@ -100,6 +104,10 @@ int main(int argc, char **argv)
         dummy = strdup(options.bam_fname);
         options.sample_name = basename(dummy);
     }
+    if (options.homref_in_vcf && options.homref_as_rle) {
+        fprintf(stderr, "ERROR: Cannot select both --homrefInVCF and --homrefAsRLE.\n");
+        exit(-1);
+    }
     fprintf(stderr, "bam: %s\n", options.bam_fname);
     fprintf(stderr, "ref: %s\n", options.ref_fname);
     fprintf(stderr, "vcf: %s\n", options.vcf_fname);
@@ -116,6 +124,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "bufferSize: %u\n", options.buffer_size);
     fprintf(stderr, "assumeHomref: %s\n", options.assume_homref ? "true" : "false");
     fprintf(stderr, "homrefInVCF: %s\n", options.homref_in_vcf ? "true" : "false");
+    fprintf(stderr, "homrefAsRLE: %s\n", options.homref_as_rle ? "true" : "false");
     
     // do genotyping
     genotype_bam(&options);

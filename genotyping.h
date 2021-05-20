@@ -31,6 +31,12 @@ enum Genotype { gt_AA, gt_AT, gt_AC, gt_AG, gt_TT, gt_TC, gt_TG, gt_CC, gt_CG, g
 static const char iupac_gt_str[] = "AWMRTYKCSG";
 #define iupac_gt(g) (((g)>=gt_AA&&(g)<=gt_GG)?iupac_gt_str[(g)]:'N')
 
+typedef struct
+{
+    hts_pos_t start;
+    hts_pos_t end;
+} homref_rle;
+
 struct GenotypingOptions
 {
     char *bam_fname;
@@ -52,8 +58,12 @@ struct GenotypingOptions
     char *sample_name;
     int cmd_argc;
     char **cmd_argv;
+    bool homref_as_rle;
+    homref_rle hrrle;
 };
 
+void reset_homref_rle(homref_rle *rle);
+void write_homref_rle(FILE *f, homref_rle *rle);
 double logFactorial_quotient(uint32_t a, uint32_t t, uint32_t c, uint32_t g);
 void bayesian_genotype_inference(
     enum Genotype* Gt, int* Qual, char ref, 

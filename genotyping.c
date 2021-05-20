@@ -1,5 +1,17 @@
 #include "genotyping.h"
 
+inline void reset_homref_rle(homref_rle *rle)
+{
+    rle->start = -2;
+    rle->end = -2;
+}
+
+inline void write_homref_rle(FILE *f, homref_rle *rle)
+{
+    fprintf(f, "%ld\t%ld\n", rle->start+1, rle->end - rle->start + 1);
+    fflush(f);
+}
+
 // calculates log of [(a+t+c+g)! / (a!*t!*c!*g!)]
 double logFactorial_quotient(uint32_t a, uint32_t t, uint32_t c, uint32_t g)
 {
@@ -647,19 +659,35 @@ void genotype(
         default: return;
     }
     
-        if (homref) {
+    if (homref) {
         if (opts->homref_in_vcf) {
             passed = depth >= opts->min_depth && qval >= opts->min_base_qual && alfr[0] >= opts->min_hom_freq;
         } else {
-            // write entry to homref file
-            fprintf(homref_fptr,
-                "%s\t%ld\t%c\t%u,%u,%u,%u,%u,%u,%u,%u\n",
-                chrom, pos+1, ref, w_A, w_T, w_C, w_G, c_A, c_T, c_C, c_G
-            );
-            fflush(homref_fptr);
+            if (opts->homref_as_rle) {
+                if (opts->hrrle.end == pos-1) {
+                    // extend the RLE by one
+                    opts->hrrle.end++;
+                } else {
+                    if (opts->hrrle.end >= 0) {
+                        write_homref_rle(homref_fptr, &(opts->hrrle));
+                    }
+                    opts->hrrle.start = pos;
+                    opts->hrrle.end = pos;
+                }
+            } else {
+                fprintf(homref_fptr,
+                    "%s\t%ld\t%c\t%u,%u,%u,%u,%u,%u,%u,%u\n",
+                    chrom, pos+1, ref, w_A, w_T, w_C, w_G, c_A, c_T, c_C, c_G
+                );
+                fflush(homref_fptr);
+            }
             return;
         }
     } else {
+        if (opts->homref_as_rle && opts->hrrle.end >= 0) {
+            write_homref_rle(homref_fptr, &(opts->hrrle));
+            reset_homref_rle(&(opts->hrrle));
+        }
         min_freq = (gt==gt_AA||gt==gt_TT||gt==gt_CC||gt==gt_GG) ? opts->min_hom_freq : opts->min_het_freq;
         alt_cov = N_GT<3 ? ad[1] : (ad[1]<ad[2] ? ad[1] : ad[2]);
         variant_freq = N_GT<3 ? alfr[1] : (alfr[1]<alfr[2] ? alfr[1] : alfr[2]);
