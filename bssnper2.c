@@ -53,7 +53,7 @@ static inline int cigar_iref2iseq_set(uint32_t **cigar, uint32_t *cigar_max, hts
     *iseq = -1;
     return -1;
 }
-static inline int cigar_iref2iseq_next(uint32_t **cigar, uint32_t *cigar_max, hts_pos_t *icig, hts_pos_t *iseq, hts_pos_t *iref)
+static inline int cigar_iref2iseq_next(uint32_t **cigar, uint32_t *cigar_max, hts_pos_t *icig, hts_pos_t *iseq, hts_pos_t *iref, hts_pos_t *ins_s, int *ins_len)
 {
     while ( *cigar < cigar_max )
     {
@@ -72,7 +72,7 @@ static inline int cigar_iref2iseq_next(uint32_t **cigar, uint32_t *cigar_max, ht
             return BAM_CMATCH;
         }
         if ( cig==BAM_CDEL || cig==BAM_CREF_SKIP ) { (*cigar)++; (*iref) += ncig; *icig = 0; continue; }
-        if ( cig==BAM_CINS ) { (*cigar)++; *iseq += ncig; *icig = 0; continue; }
+        if ( cig==BAM_CINS ) { (*cigar)++; *ins_s = *iseq+1; *ins_len = ncig; *iseq += ncig; *icig = 0; continue; }
         if ( cig==BAM_CSOFT_CLIP ) { (*cigar)++; *iseq += ncig; *icig = 0; continue; }
         if ( cig==BAM_CHARD_CLIP || cig==BAM_CPAD ) { (*cigar)++; *icig = 0; continue; }
         hts_log_error("Unexpected cigar %d", cig);
@@ -83,6 +83,17 @@ static inline int cigar_iref2iseq_next(uint32_t **cigar, uint32_t *cigar_max, ht
     return -1;
 }
 
+// TODO: new to htslib. decide whether to use
+/*!
+ @abstract  Modifies a single base in the bam structure.
+ @param s   Query sequence returned by bam_get_seq()
+ @param i   The i-th position, 0-based
+ @param b   Base in nt16 nomenclature (see seq_nt16_table)
+*/
+//#ifndef bam_seq_seqi
+//#define bam_set_seqi(s,i,b) ((s)[(i)>>1] = ((s)[(i)>>1] & (0xf0 >> ((~(i)&1)<<2))) | ((b)<<((~(i)&1)<<2)))
+//#endif
+
 static int tweak_overlap_quality(bam1_t *a, bam1_t *b)
 {
     uint32_t *a_cigar = bam_get_cigar(a), *a_cigar_max = a_cigar + a->core.n_cigar;
@@ -92,6 +103,8 @@ static int tweak_overlap_quality(bam1_t *a, bam1_t *b)
     uint8_t *a_qual = bam_get_qual(a), *b_qual = bam_get_qual(b);
     uint8_t *a_seq  = bam_get_seq(a), *b_seq = bam_get_seq(b);
 
+    hts_pos_t a_ins_pos = -1, b_ins_pos = -1;
+    int a_ins_len = 0, b_ins_len = 0;
     hts_pos_t iref   = b->core.pos;
     hts_pos_t a_iref = iref - a->core.pos;
     hts_pos_t b_iref = iref - b->core.pos;
@@ -110,15 +123,52 @@ static int tweak_overlap_quality(bam1_t *a, bam1_t *b)
     {
         // Increment reference position
         while ( a_ret >= 0 && a_iref>=0 && a_iref < iref - a->core.pos )
-            a_ret = cigar_iref2iseq_next(&a_cigar, a_cigar_max, &a_icig, &a_iseq, &a_iref);
+            a_ret = cigar_iref2iseq_next(&a_cigar, a_cigar_max, &a_icig, &a_iseq, &a_iref, &a_ins_pos, &a_ins_len);
         if ( a_ret<0 || a_iseq == a->core.l_qseq) { err = a_ret<-1?-1:0; break; }   // done
         if ( iref < a_iref + a->core.pos ) iref = a_iref + a->core.pos;
 
         while ( b_ret >= 0 && b_iref>=0 && b_iref < iref - b->core.pos )
-            b_ret = cigar_iref2iseq_next(&b_cigar, b_cigar_max, &b_icig, &b_iseq, &b_iref);
+            b_ret = cigar_iref2iseq_next(&b_cigar, b_cigar_max, &b_icig, &b_iseq, &b_iref, &b_ins_pos, &b_ins_len);
         if ( b_ret<0 || b_iseq == b->core.l_qseq) { err = b_ret<-1?-1:0; break; }  // done
         if ( iref < b_iref + b->core.pos ) iref = b_iref + b->core.pos;
 
+        // check if either mate contained an insertion
+        int qual;
+        if (a_ins_len > 0 || b_ins_len > 0) {
+            // if both contained an insertion and the insertions are of the same size,
+            // evaluate the insertion; otherwise, leave quals as is
+            if (a_ins_pos >= 0 && b_ins_pos >= 0 && a_ins_len == b_ins_len) {
+                // iterate through the basecalls on both mates through the insertion
+                for (hts_pos_t ins_i = 0; ins_i < a_ins_len; ins_i++) {
+                    //if (a_ins_pos == a->core.l_qseq || b_ins_pos == b->core.l_qseq)
+                    if (bam_seqi(a_seq,a_ins_pos) == bam_seqi(b_seq,b_ins_pos)) {
+                        // if both mates have the same basecall, reassign quals as normal
+                        qual = a_qual[a_ins_pos] + b_qual[b_ins_pos];
+                        a_qual[a_ins_pos] = qual>200 ? 200 : qual;
+                    } else {
+                        #ifdef bam_set_seqi
+                        if (a_qual[a_ins_pos] >= b_qual[b_ins_pos]+10) {
+                            a_qual[a_ins_pos] = 0.8 * a_qual[a_ins_pos];
+                        } else if (b_qual[b_ins_pos] >= a_qual[a_ins_pos]+10) {
+                            a_qual[a_ins_pos] = 0.8 * b_qual[b_ins_pos];
+                            bam_set_seqi(a_seq, a_ins_pos, bam_seqi(b_seq,b_ins_pos));
+                        } else
+                        #endif
+                            a_qual[a_ins_pos] = 0;
+                    }
+                    // regardless of matching, give 'b' read a qual of zero
+                    // (need to keep all calls on one read)
+                    b_qual[b_ins_pos] = 0;
+                    a_ins_pos++;
+                    b_ins_pos++;
+                }
+            }
+            a_ins_pos = -1;
+            a_ins_len = 0;
+            b_ins_pos = -1;
+            b_ins_len = 0;
+        }
+        
         iref++;
         if ( a_iref+a->core.pos != b_iref+b->core.pos ) continue;   // only CMATCH positions, don't know what to do with indels
 
@@ -130,8 +180,12 @@ static int tweak_overlap_quality(bam1_t *a, bam1_t *b)
             #if DBG
                 fprintf(stderr,"%c",seq_nt16_str[bam_seqi(a_seq,a_iseq)]);
             #endif
+            /*fprintf(stderr, "%ld\tA: %ld %c %u\tB: %ld %c %u\n", iref,
+                a_iseq, seq_nt16_str[bam_seqi(a_seq,a_iseq)], a_qual[a_iseq],
+                b_iseq, seq_nt16_str[bam_seqi(b_seq,b_iseq)], b_qual[b_iseq]
+            );*/
             // we are very confident about this base
-            int qual = a_qual[a_iseq] + b_qual[b_iseq];
+            /*int*/ qual = a_qual[a_iseq] + b_qual[b_iseq];
             a_qual[a_iseq] = qual>200 ? 200 : qual;
             b_qual[b_iseq] = 0;
         }
@@ -175,9 +229,9 @@ void call_genotype(FILE *vcf_fptr, FILE *homref_fptr, const char* chrom, gt_pos*
     return;
     */
     uint32_t quals[8];
-    uint32_t *calls = gp->call_counts;
+    uint32_t *calls = gp->bc.call_counts;
     for (int i = 0; i < 8; i++)
-        quals[i] = udiv(gp->qual_sums[i],calls[i]);
+        quals[i] = udiv(gp->bc.qual_sums[i],calls[i]);
 
     genotype(
       vcf_fptr, homref_fptr, chrom, gp->pos, ref, opts,
@@ -186,30 +240,74 @@ void call_genotype(FILE *vcf_fptr, FILE *homref_fptr, const char* chrom, gt_pos*
     );
 }
 
-void update_pos_buffer(gt_buffer *gb, hts_pos_t pos, uint8_t basecall, uint8_t qual, bool is_W)
+int get_read_call(uint8_t basecall, bool watson)
 {
-    gt_pos *gp = retrieve_gt_pos(gb, pos, true);
-    int index = -1;
-    if (is_W) {
+    if (watson) {
         switch (basecall) {
-            case 'A': index = W_A; break;
-            case 'T': index = W_T; break;
-            case 'C': index = W_C; break;
-            case 'G': index = W_G; break;
+            case 'A': return W_A;
+            case 'T': return W_T;
+            case 'C': return W_C;
+            case 'G': return W_G;
         }
     } else {
         switch (basecall) {
-            case 'A': index = C_A; break;
-            case 'T': index = C_T; break;
-            case 'C': index = C_C; break;
-            case 'G': index = C_G; break;
+            case 'A': return C_A;
+            case 'T': return C_T;
+            case 'C': return C_C;
+            case 'G': return C_G;
         }
     }
-    if (index < W_A || index > C_G) return;
-    gp->call_counts[index] += 1;
-    gp->qual_sums[index] += qual;
+    return -1;
 }
 
+void update_pos(basecalls *bc, uint8_t call, uint8_t qual, bool is_W)
+{
+    int index = get_read_call(call, is_W);
+    if (index < W_A || index > C_G) return;
+    bc->call_counts[index] += 1;
+    bc->qual_sums[index] += qual;
+}
+
+void update_pos_buffer(gt_buffer *gb, hts_pos_t pos, uint8_t basecall, uint8_t qual, bool is_W)
+{
+    gt_pos *gp = retrieve_gt_pos(gb, pos, true);
+    update_pos(&(gp->bc), basecall, qual, is_W);
+}
+
+void update_pos_buffer_del(gt_buffer *gb, hts_pos_t pos, uint32_t len)
+{
+    gt_pos *gp = retrieve_gt_pos(gb, pos, true);
+    increment_del(gp, len);
+}
+
+#define read_base(b,pos) (seq_nt16_str[bam_seqi(bam_get_seq((b)),(pos))])
+void process_insertion(gt_pos *gp, uint32_t ins_sz, bam1_t *b, uint32_t *readpos, uint8_t *quals, uint8_t min_qual, bool watson)
+{
+    if (quals[*readpos] == 0) { /*fprintf(stderr, "\tfirst base is qual 0; skipping.\n");*/ return; }
+    //fprintf(stderr, "INS: %s refpos: %lu length %u readpos: %u\n", bam_get_qname(b), gp->pos, ins_sz, *readpos);
+    // where the first base has a qual of 0, ignore this insertion
+    // this will account for read pairs where tweak_overlap_quality has reset quals
+    ins_entry *ie = retrieve_ins_entry(gp, ins_sz);
+    gp->ins->total_reads += 1;
+    ie->count += 1;
+    uint32_t ins_pos = 0;
+    while (ins_pos < ins_sz) {
+        if (quals[*readpos] >= min_qual) {
+            update_pos(
+                &(ie->bc_list[ins_pos]),
+                read_base(b, *readpos),
+                quals[*readpos],
+                watson
+            );
+        }
+        ins_pos++;
+        (*readpos) += 1;
+    }
+    
+}
+
+#define get_cigar_op_len(b,i) (bam_get_cigar((b))[(op_num)]>>BAM_CIGAR_SHIFT)
+#define get_cigar_op(b,i) (BAM_CIGAR_STR[bam_get_cigar((b))[(op_num)]&BAM_CIGAR_MASK])
 void evaluate_read(gt_buffer *gb, bam1_t *b, hts_pos_t eval_start, hts_pos_t eval_end, uint8_t min_qual)
 {
     const bam1_core_t *read = &b->core;
@@ -224,11 +322,26 @@ void evaluate_read(gt_buffer *gb, bam1_t *b, hts_pos_t eval_start, hts_pos_t eva
     
     uint32_t op_len;
     uint16_t op_num;
-    uint8_t cigar_op;
+    uint8_t cigar_op, this_qual;
     uint32_t readpos = 0;
     for (op_num = 0; op_num < read->n_cigar; op_num++) {
-        op_len = bam_get_cigar(b)[op_num]>>BAM_CIGAR_SHIFT;
-        cigar_op = BAM_CIGAR_STR[bam_get_cigar(b)[op_num]&BAM_CIGAR_MASK];
+        //op_len = bam_get_cigar(b)[op_num]>>BAM_CIGAR_SHIFT;
+        //cigar_op = BAM_CIGAR_STR[bam_get_cigar(b)[op_num]&BAM_CIGAR_MASK];
+        op_len = get_cigar_op_len(b, op_num);
+        cigar_op = get_cigar_op(b, op_num);
+        if (!past_start && refpos >= eval_start && cigar_op != 'I' && cigar_op != 'D')
+            past_start = true;
+        if (eval_end > 0 && refpos >= eval_end) {
+            if (refpos == eval_end && op_num > 0) {
+                if (cigar_op == 'D') update_pos_buffer_del(gb, refpos-1, op_len);
+                else if (cigar_op == 'I') {
+                    process_insertion(
+                        retrieve_gt_pos(gb, refpos-1, true), op_len, b, &readpos, quals, min_qual, watson
+                    );
+                }
+            }
+            return;
+        }
         switch(cigar_op) {
             case 'M':
             case '=':
@@ -236,22 +349,47 @@ void evaluate_read(gt_buffer *gb, bam1_t *b, hts_pos_t eval_start, hts_pos_t eva
                 while (op_len-- > 0) { // check this is correct number of operations
                     if (!past_start && refpos >= eval_start)
                         past_start = true;
-                    if (eval_end > 0 && refpos >= eval_end)
+                    if (eval_end > 0 && refpos >= eval_end) {
+                        // do we need to do this if refpos > eval_end? or only if ==eval_end? - think the latter?
+                        // if we reach the end of a M/=/X operation at eval_end
+                        // need to check if there is an I or D after
+                        // in order to register ins/del with this position
+                        if (refpos == eval_end && op_len == 0 && op_num < read->n_cigar-1) {
+                            cigar_op = get_cigar_op(b, op_num+1);
+                            op_len = get_cigar_op_len(b, op_num+1);
+                            if (cigar_op == 'D') update_pos_buffer_del(gb, refpos-1, op_len);
+                            else if (cigar_op == 'I') {
+                                process_insertion(
+                                    retrieve_gt_pos(gb, refpos-1, true), op_len, b, &readpos, quals, min_qual, watson
+                                );
+                            }
+                        }
                         return;
+                    }
                     
-                    uint8_t this_qual = quals[readpos];
+                    this_qual = quals[readpos];
                     if (past_start && this_qual >= min_qual)
-                        update_pos_buffer(gb, refpos, seq_nt16_str[bam_seqi(bam_get_seq(b), readpos)], this_qual, watson);
+                        update_pos_buffer(gb, refpos, read_base(b, readpos), this_qual, watson);
                     readpos += 1;
                     refpos += 1;
                 }
                 break;
             case 'D':
-                // register_deletion(refpos+1, op_len);
+                // qual check here prevents double-counting of overlapping portions of reads
+                if (past_start && op_num > 0 && quals[(readpos==0 ? 0 : (readpos-1))] > 0)
+                    update_pos_buffer_del(gb, refpos-1, op_len);
                 refpos += op_len;
                 break;
             case 'I':
-                // register_insertion(refpos+1, op_len, b, seq+readpos);
+                if (!past_start || op_num==0) {
+                    readpos += op_len;
+                    continue;
+                }
+                // below returns NULL gt_pos - why?
+                process_insertion(
+                    retrieve_gt_pos(gb, refpos-1, true), op_len, b, &readpos, quals, min_qual, watson
+                );
+                break;
             case 'S':
                 readpos += op_len;
                 break;
@@ -262,6 +400,7 @@ void evaluate_read(gt_buffer *gb, bam1_t *b, hts_pos_t eval_start, hts_pos_t eva
         }
     }
 }
+
 
 typedef struct 
 {
@@ -367,6 +506,141 @@ void write_vcf_header(FILE *vcf_fptr, sam_hdr_t *bam_hdr, struct GenotypingOptio
     fflush(vcf_fptr);
 }
 
+void place_unique_element(int a, int *arr, int sz)
+{
+    // this function assumes uniqueness
+
+    // check for trivial cases
+    if (sz == 0) { arr[0] = a; return; }
+    if (a > arr[sz-1]) {arr[sz] = a; return;}
+    if (a < arr[0]) {
+        for (int i = sz; i > 0; i--) arr[i] = arr[i-1];
+        arr[0] = a;
+        return;
+    }
+    if (sz == 2) {
+        // in this special case where there are only two elements, 
+        // we know that 'a' belongs in the middle
+        arr[2] = arr[1];
+        arr[1] = a;
+        return;
+    }
+
+    // binary search
+    int s = 0;
+    int e = sz-1;
+    int m;
+    while (e > s) {
+        m = (s+e)/2;
+        if (a > arr[m]) s = m + 1;
+        else e = m - 1;
+    }
+    if (a > arr[e]) e++;
+    for (int i = sz; i > e; i--) arr[i] = arr[i-1];
+    arr[e] = a;
+    return;
+}
+
+void write_ins_entry(FILE *fp, ins_entry *e)
+{
+    enum Genotype gt;
+    int q;
+    basecalls *b;
+    fprintf(fp, "%d,%d,", e->length, e->count);
+    for (int j = 0; j < e->length; j++) {
+        b = &(e->bc_list[j]);
+        bayesian_genotype_inference(
+            &gt, &q, '\0',
+            b->call_counts[W_A], b->call_counts[W_T], b->call_counts[W_C], b->call_counts[W_G],
+            b->call_counts[C_A], b->call_counts[C_T], b->call_counts[C_C], b->call_counts[C_G],
+            b->qual_sums[W_A], b->qual_sums[W_T], b->qual_sums[W_C], b->qual_sums[W_G],
+            b->qual_sums[C_A], b->qual_sums[C_T], b->qual_sums[C_C], b->qual_sums[C_G]
+        );
+        fputc(iupac_gt(gt), fp);
+    }
+}
+
+void write_ins(FILE *fp, char *chrom, gt_pos *gp)
+{
+    ins_dict *id = gp->ins;
+    if (id->occupancy < 1) return;
+    ins_entry *e;
+    int i;
+    // add 1 to the pos, since we are actually looking just after the pos in question
+    fprintf(fp, "%s\t%ld\t%d\tINS\t%d\t", chrom, gp->pos+1, gp_count(gp), id->total_reads);
+    if (id->occupancy > 1) {
+        int* lengths = malloc(id->occupancy * sizeof(int));
+        int sorted_sz = 0;
+
+        // sort the observed insertion lengths so they are printed out in order
+        for (i = 0; i < INDEL_HASHSIZE && sorted_sz < id->occupancy; i++) {
+            e = id->entries[i];
+            while (e != NULL) {
+                place_unique_element(e->length, lengths, sorted_sz++);
+                e = e->next;
+            }
+        }
+        
+        for (i = 0; i < id->occupancy; i++) {
+            e = retrieve_ins_entry(gp, lengths[i]);
+            write_ins_entry(fp, e);
+            if (i < id->occupancy-1) fputc(';', fp);
+        }
+        fputc('\n', fp);
+        fflush(fp);
+        free(lengths);
+    } else {
+        for (i = 0; i < INDEL_HASHSIZE; i++) {
+            if ((e = id->entries[i]) != NULL) {
+                write_ins_entry(fp, e);
+                fputc('\n', fp);
+                fflush(fp);
+                return;
+            }
+        }
+    }
+}
+
+void write_del(FILE *fp, char *chrom, gt_pos *gp)
+{
+    del_dict *dd = gp->del;
+    if (dd->occupancy < 1) return;
+    del_entry *e;
+    int i;
+    // add 1 to the pos, since we are actually looking just after the pos in question
+    fprintf(fp, "%s\t%ld\t%d\tDEL\t%d\t", chrom, gp->pos+1, gp_count(gp), dd->total_reads);
+    if (dd->occupancy > 1) {
+        int* lengths = malloc(dd->occupancy * sizeof(int));
+        int sorted_sz = 0;
+
+        // sort the observed insertion lengths so they are printed out in order
+        for (i = 0; i < INDEL_HASHSIZE && sorted_sz < dd->occupancy; i++) {
+            e = dd->entries[i];
+            while (e != NULL) {
+                place_unique_element(e->length, lengths, sorted_sz++);
+                e = e->next;
+            }
+        }
+        
+        for (i = 0; i < dd->occupancy; i++) {
+            e = retrieve_del_entry(dd, lengths[i]);
+            fprintf(fp, "%d,%d", e->length, e->count);
+            if (i < dd->occupancy-1) fputc(';', fp);
+        }
+        fputc('\n', fp);
+        fflush(fp);
+        free(lengths);
+    } else {
+        for (i = 0; i < INDEL_HASHSIZE; i++) {
+            if ((e = dd->entries[i]) != NULL) {
+                fprintf(fp, "%d,%d\n", e->length, e->count);
+                fflush(fp);
+                return;
+            }
+        }
+    }   
+}
+
 void genotype_bam(struct GenotypingOptions *opts)
 {
     int i;
@@ -407,6 +681,7 @@ void genotype_bam(struct GenotypingOptions *opts)
     FILE *vcf_fptr = fopen(opts->vcf_fname, "w");
     write_vcf_header(vcf_fptr, header, opts);
     FILE *homref_fptr = fopen(opts->homref_fname, "w");
+    FILE *indel_fptr = fopen(opts->indel_fname, "w");
 
     int32_t curr_chrom = -1;
     hts_pos_t curr_pos = -1;
@@ -415,6 +690,7 @@ void genotype_bam(struct GenotypingOptions *opts)
     b = bam_init1();
     bool new_chrom;
     char* chrom_name;
+    //gt_pos* to_destroy;
 
     // walk through alignment file
     while (sam_read1(bamf, header, b) >= 0) {
@@ -442,6 +718,11 @@ void genotype_bam(struct GenotypingOptions *opts)
                     bam_destroy1(old_read);
                 }
                 call_genotype(vcf_fptr, homref_fptr, chrom_name, geno_pos, get_ref_base(chrom_name, curr_pos, &ref_cache), opts);
+                if (geno_pos->ins != NULL && geno_pos->ins->total_reads >= opts->min_depth) write_ins(indel_fptr, chrom_name, geno_pos);
+                if (geno_pos->del != NULL && geno_pos->del->total_reads >= opts->min_depth) write_del(indel_fptr, chrom_name, geno_pos);
+                //to_destroy = pop_gt_pos(geno_buf, curr_pos);
+                //fprintf(stderr, "Destroying gt_pos: curr_pos %lu, geno_pos: %p (pos %lu), to_destroy: %p\n", curr_pos, (void *)geno_pos, geno_pos->pos, (void *)to_destroy);
+                //gt_pos_destroy(to_destroy);
                 gt_pos_destroy(pop_gt_pos(geno_buf, curr_pos)); // destroy geno_pos and update geno_buf->occupancy if necessary
             }
             curr_pos++;
@@ -458,6 +739,12 @@ void genotype_bam(struct GenotypingOptions *opts)
             chrom_name = header->target_name[curr_chrom];
             seen_chrom[curr_chrom] = true;
             reset_refcache(&ref_cache);
+            if (opts->homref_as_rle) {
+                if (opts->hrrle.end >= 0) write_homref_rle(homref_fptr, &(opts->hrrle));
+                reset_homref_rle(&(opts->hrrle));
+                fprintf(homref_fptr, "chrom=%s\n", chrom_name);
+                fflush(homref_fptr);
+            }
         }
 
         if (b->core.flag&BAM_FPROPER_PAIR && mate_same_chrom(b)) {
@@ -508,14 +795,24 @@ void genotype_bam(struct GenotypingOptions *opts)
                 bam_destroy1(old_read);
             }
             call_genotype(vcf_fptr, homref_fptr, chrom_name, geno_pos, get_ref_base(chrom_name, curr_pos, &ref_cache), opts);
+            if (geno_pos->ins != NULL && geno_pos->ins->total_reads >= opts->min_depth) write_ins(indel_fptr, chrom_name, geno_pos);
+            if (geno_pos->del != NULL && geno_pos->del->total_reads >= opts->min_depth) write_del(indel_fptr, chrom_name, geno_pos);
+            //to_destroy = pop_gt_pos(geno_buf, curr_pos);
+            //gt_pos_destroy(to_destroy);
             gt_pos_destroy(pop_gt_pos(geno_buf, curr_pos)); // destroy geno_pos and update geno_buf->occupancy if necessary
         }
         curr_pos++;
     }
     
+    if (opts->homref_as_rle && opts->hrrle.end >= 0) {
+        write_homref_rle(homref_fptr, &(opts->hrrle));
+        reset_homref_rle(&(opts->hrrle));
+    }
+
     // close files and free memory
     fclose(vcf_fptr);
     fclose(homref_fptr);
+    fclose(indel_fptr);
 
     free(seen_chrom);
     fai_destroy(ref_cache.fai);
